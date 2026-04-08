@@ -34,8 +34,10 @@ body{display:flex;flex-direction:column}
 }
 .chars button.on{border-color:#f38ba8;background:#45475a}
 
-.stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
-#spriteCanvas{image-rendering:pixelated;image-rendering:crisp-edges;display:none}
+.stage{flex:1;display:flex;align-items:center;justify-content:center;gap:24px;position:relative}
+.view{display:none;flex-direction:column;align-items:center;gap:6px}
+.view canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+.view-label{font-size:10px;color:#585b70;letter-spacing:.5px;text-transform:uppercase}
 .placeholder{color:#585b70;font-size:16px;text-align:center;padding:20px;line-height:1.6}
 
 .joy-wrap{
@@ -77,7 +79,14 @@ body{display:flex;flex-direction:column}
 </div>
 
 <div class="stage">
-  <canvas id="spriteCanvas"></canvas>
+  <div class="view" id="viewBig">
+    <canvas id="spriteCanvas"></canvas>
+    <span class="view-label">zoomed</span>
+  </div>
+  <div class="view" id="viewSmall">
+    <canvas id="spriteSmall"></canvas>
+    <span class="view-label">actual size</span>
+  </div>
   <div class="placeholder" id="ph">Upload an RPG Maker 2k/2k3<br>character sprite sheet</div>
 </div>
 
@@ -110,6 +119,8 @@ const BASE_SPEED = 180;
 
 const cv = document.getElementById('spriteCanvas');
 const ctx = cv.getContext('2d');
+const cvSm = document.getElementById('spriteSmall');
+const ctxSm = cvSm.getContext('2d');
 const ph = document.getElementById('ph');
 const dirLabel = document.getElementById('dirLabel');
 
@@ -159,7 +170,8 @@ function processSheet(img) {
   dir = DIR_DOWN;
   buildSelector();
   ph.style.display = 'none';
-  cv.style.display = 'block';
+  document.getElementById('viewBig').style.display = 'flex';
+  document.getElementById('viewSmall').style.display = 'flex';
   if (!looping) { looping = true; requestAnimationFrame(loop); }
 }
 
@@ -231,13 +243,23 @@ function loop(ts) {
   ctx.fill();
   ctx.restore();
 
-  // Draw sprite frame
+  // Source frame coordinates (shared by both canvases)
   const o = charOrigin();
   const fi = WALK_CYCLE[animFrame];
   const sx = o.x + fi * CELL_W;
   const sy = o.y + dir * CELL_H;
+
+  // Draw big sprite
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(sheet, sx, sy, CELL_W, CELL_H, 0, 0, cv.width, cv.height);
+
+  // Draw small sprite (2x = 48x64, close to true in-game presence)
+  const smScale = 2;
+  cvSm.width = CELL_W * smScale;
+  cvSm.height = CELL_H * smScale;
+  ctxSm.clearRect(0, 0, cvSm.width, cvSm.height);
+  ctxSm.imageSmoothingEnabled = false;
+  ctxSm.drawImage(sheet, sx, sy, CELL_W, CELL_H, 0, 0, cvSm.width, cvSm.height);
 }
 
 // ── Joystick ──
