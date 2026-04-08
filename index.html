@@ -122,11 +122,28 @@ document.getElementById('fileIn').addEventListener('change', e => {
   img.src = URL.createObjectURL(f);
 });
 
+function downscaleIfNeeded(img) {
+  const NATIVE_W = 288, NATIVE_H = 256;
+  if (img.height > NATIVE_H && img.height % NATIVE_H === 0) {
+    const factor = img.height / NATIVE_H;
+    if (img.width % NATIVE_W === 0 && img.width / NATIVE_W === factor) {
+      const c = document.createElement('canvas');
+      c.width = NATIVE_W; c.height = NATIVE_H;
+      const x = c.getContext('2d');
+      x.imageSmoothingEnabled = false;
+      x.drawImage(img, 0, 0, NATIVE_W, NATIVE_H);
+      return c;
+    }
+  }
+  return img;
+}
+
 function processSheet(img) {
+  const src = downscaleIfNeeded(img);
   const c = document.createElement('canvas');
-  c.width = img.width; c.height = img.height;
+  c.width = src.width; c.height = src.height;
   const x = c.getContext('2d');
-  x.drawImage(img, 0, 0);
+  x.drawImage(src, 0, 0);
   const id = x.getImageData(0, 0, c.width, c.height);
   const d = id.data;
   for (let i = 0; i < d.length; i += 4) {
