@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Sprite Previewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{
+  height:100%;overflow:hidden;
+  background:#181825;color:#cdd6f4;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  touch-action:none;user-select:none;-webkit-user-select:none;
+}
+body{display:flex;flex-direction:column}
+
+.bar{
+  padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:#1e1e2e;border-bottom:1px solid #313244;
+  z-index:10;
+}
+.bar label{
+  background:#45475a;padding:7px 14px;border-radius:8px;cursor:pointer;
+  font-size:13px;font-weight:500;
+  transition:background .15s;
+}
+.bar label:active{background:#585b70}
+.bar input[type=file]{display:none}
+.chars{display:flex;gap:3px;flex-wrap:wrap}
+.chars button{
+  width:28px;height:28px;border:2px solid transparent;border-radius:6px;
+  background:#313244;color:#cdd6f4;cursor:pointer;font-size:11px;font-weight:600;
+  transition:border-color .15s,background .15s;
+}
+.chars button.on{border-color:#f38ba8;background:#45475a}
+
+.stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
+#spriteCanvas{image-rendering:pixelated;image-rendering:crisp-edges;display:none}
+.placeholder{color:#585b70;font-size:16px;text-align:center;padding:20px;line-height:1.6}
+
+.joy-wrap{
+  padding:16px 0 max(16px,env(safe-area-inset-bottom));
+  display:flex;justify-content:center;
+}
+.joy-base{
+  width:130px;height:130px;border-radius:50%;
+  background:rgba(205,214,244,.06);
+  border:2px solid rgba(205,214,244,.12);
+  position:relative;flex-shrink:0;
+}
+.joy-thumb{
+  width:48px;height:48px;border-radius:50%;
+  background:rgba(243,139,168,.7);
+  box-shadow:0 0 12px rgba(243,139,168,.3);
+  position:absolute;top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  pointer-events:none;
+  transition:box-shadow .15s;
+}
+.joy-thumb.active{box-shadow:0 0 20px rgba(243,139,168,.5)}
+
+.dir-label{
+  position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  margin-bottom:6px;font-size:11px;color:#585b70;
+  letter-spacing:.5px;text-transform:uppercase;
+  opacity:0;transition:opacity .2s;
+  pointer-events:none;white-space:nowrap;
+}
+.dir-label.show{opacity:1;color:#a6adc8}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <label>Upload Sheet<input type="file" id="fileIn" accept="image/*"></label>
+  <div class="chars" id="chars"></div>
+</div>
+
+<div class="stage">
+  <canvas id="spriteCanvas"></canvas>
+  <div class="placeholder" id="ph">Upload an RPG Maker 2k/2k3<br>character sprite sheet</div>
+</div>
+
+<div class="joy-wrap">
+  <div style="position:relative">
+    <div class="dir-label" id="dirLabel"></div>
+    <div class="joy-base" id="joyBase">
+      <div class="joy-thumb" id="joyThumb"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CELL_W = 24, CELL_H = 32;
+const FRAMES_PER_DIR = 3, DIRS_PER_CHAR = 4;
+const CHAR_W = CELL_W * FRAMES_PER_DIR;
+const CHAR_H = CELL_H * DIRS_PER_CHAR;
+
+// Direction indices match row order: Up, Right, Down, Left
+const DIR_UP = 0, DIR_RIGHT = 1, DIR_DOWN = 2, DIR_LEFT = 3;
+const DIR_NAMES = ['Up', 'Right', 'Down', 'Left'];
+const WALK_CYCLE = [1, 0, 1, 2];
+
+const KEY_R = 0, KEY_G = 128, KEY_B = 64, KEY_TOL = 8;
+
+let sheet = null;
+let charIdx = 0, dir = DIR_DOWN, moving = false;
+let animFrame = 0, lastTick = 0;
+const BASE_SPEED = 180;
+
+const cv = document.getElementById('spriteCanvas');
+const ctx = cv.getContext('2d');
+const ph = document.getElementById('ph');
+const dirLabel = document.getElementById('dirLabel');
+
+// ── Upload ──
+document.getElementById('fileIn').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => { processSheet(img); URL.revokeObjectURL(img.src); };
+  img.src = URL.createObjectURL(f);
+});
+
+function processSheet(img) {
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext('2d');
+  x.drawImage(img, 0, 0);
+  const id = x.getImageData(0, 0, c.width, c.height);
+  const d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.abs(d[i] - KEY_R) <= KEY_TOL &&
+        Math.abs(d[i+1] - KEY_G) <= KEY_TOL &&
+        Math.abs(d[i+2] - KEY_B) <= KEY_TOL) {
+      d[i+3] = 0;
+    }
+  }
+  x.putImageData(id, 0, 0);
+  sheet = c;
+  charIdx = 0;
+  dir = DIR_DOWN;
+  buildSelector();
+  ph.style.display = 'none';
+  cv.style.display = 'block';
+  if (!looping) { looping = true; requestAnimationFrame(loop); }
+}
+
+// ── Character selector ──
+function buildSelector() {
+  const el = document.getElementById('chars');
+  el.innerHTML = '';
+  const nx = Math.floor(sheet.width / CHAR_W);
+  const ny = Math.floor(sheet.height / CHAR_H);
+  for (let i = 0; i < nx * ny; i++) {
+    const b = document.createElement('button');
+    b.textContent = i + 1;
+    if (i === charIdx) b.className = 'on';
+    b.addEventListener('click', () => {
+      charIdx = i;
+      el.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    });
+    el.appendChild(b);
+  }
+}
+
+function charOrigin() {
+  const nx = Math.floor(sheet.width / CHAR_W);
+  return {
+    x: (charIdx % nx) * CHAR_W,
+    y: Math.floor(charIdx / nx) * CHAR_H
+  };
+}
+
+// ── Render loop ──
+let looping = false;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (!sheet) return;
+
+  // Animation tick
+  const speed = moving ? BASE_SPEED : 0;
+  if (moving) {
+    if (ts - lastTick >= speed) { animFrame = (animFrame + 1) % WALK_CYCLE.length; lastTick = ts; }
+  } else {
+    animFrame = 0;
+    lastTick = ts;
+  }
+
+  // Scale to fit nicely
+  const area = cv.parentElement.getBoundingClientRect();
+  const maxScale = Math.min(area.width / CELL_W, area.height / CELL_H) * 0.55;
+  const scale = Math.max(4, Math.floor(maxScale));
+  cv.width = CELL_W * scale;
+  cv.height = CELL_H * scale;
+
+  // Checkerboard bg
+  const cs = Math.max(scale, 4);
+  for (let y = 0; y < cv.height; y += cs) {
+    for (let x = 0; x < cv.width; x += cs) {
+      ctx.fillStyle = ((x / cs + y / cs) & 1) ? '#1e1e2e' : '#21213a';
+      ctx.fillRect(x, y, cs, cs);
+    }
+  }
+
+  // Shadow
+  ctx.save();
+  ctx.translate(cv.width / 2, cv.height - scale * 3);
+  ctx.scale(1, 0.35);
+  ctx.beginPath();
+  ctx.arc(0, 0, scale * 5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fill();
+  ctx.restore();
+
+  // Draw sprite frame
+  const o = charOrigin();
+  const fi = WALK_CYCLE[animFrame];
+  const sx = o.x + fi * CELL_W;
+  const sy = o.y + dir * CELL_H;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(sheet, sx, sy, CELL_W, CELL_H, 0, 0, cv.width, cv.height);
+}
+
+// ── Joystick ──
+const joyBase = document.getElementById('joyBase');
+const joyThumb = document.getElementById('joyThumb');
+const JOY_R = 65;
+const THUMB_R = 24;
+const DEADZONE = 0.18;
+let joyActive = false, joyCenter = {x:0, y:0};
+
+function joyRect() {
+  const r = joyBase.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+function joyStart(cx, cy) {
+  joyActive = true;
+  joyCenter = joyRect();
+  joyThumb.classList.add('active');
+  joyMove(cx, cy);
+}
+
+function joyMove(cx, cy) {
+  if (!joyActive) return;
+  let dx = cx - joyCenter.x, dy = cy - joyCenter.y;
+  const dist = Math.hypot(dx, dy);
+  const max = JOY_R - THUMB_R;
+  if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
+
+  joyThumb.style.left = `calc(50% + ${dx}px)`;
+  joyThumb.style.top  = `calc(50% + ${dy}px)`;
+
+  const norm = Math.min(dist / max, 1);
+  if (norm < DEADZONE) {
+    moving = false;
+    dirLabel.classList.remove('show');
+    return;
+  }
+  moving = true;
+
+  const a = Math.atan2(dy, dx);
+  if      (a > -Math.PI/4 && a <=  Math.PI/4)  dir = DIR_RIGHT;
+  else if (a >  Math.PI/4 && a <= 3*Math.PI/4) dir = DIR_DOWN;
+  else if (a > -3*Math.PI/4 && a <= -Math.PI/4) dir = DIR_UP;
+  else dir = DIR_LEFT;
+
+  dirLabel.textContent = DIR_NAMES[dir];
+  dirLabel.classList.add('show');
+}
+
+function joyEnd() {
+  joyActive = false;
+  moving = false;
+  joyThumb.style.left = '50%';
+  joyThumb.style.top  = '50%';
+  joyThumb.classList.remove('active');
+  dirLabel.classList.remove('show');
+}
+
+// Mouse
+joyBase.addEventListener('mousedown', e => { e.preventDefault(); joyStart(e.clientX, e.clientY); });
+window.addEventListener('mousemove', e => joyMove(e.clientX, e.clientY));
+window.addEventListener('mouseup', joyEnd);
+
+// Touch
+joyBase.addEventListener('touchstart', e => { e.preventDefault(); const t = e.touches[0]; joyStart(t.clientX, t.clientY); });
+window.addEventListener('touchmove', e => { if (joyActive) { e.preventDefault(); const t = e.touches[0]; joyMove(t.clientX, t.clientY); } }, {passive:false});
+window.addEventListener('touchend', e => { if (joyActive) joyEnd(); });
+
+// ── Keyboard (desktop) ──
+const keys = {};
+window.addEventListener('keydown', e => {
+  if (!sheet) return;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    keys[e.key] = true;
+    updateKeyboard();
+  }
+});
+window.addEventListener('keyup', e => {
+  delete keys[e.key];
+  updateKeyboard();
+});
+function updateKeyboard() {
+  const u = keys['ArrowUp'], d = keys['ArrowDown'], l = keys['ArrowLeft'], r = keys['ArrowRight'];
+  if (u || d || l || r) {
+    moving = true;
+    if (u) dir = DIR_UP;
+    else if (d) dir = DIR_DOWN;
+    else if (l) dir = DIR_LEFT;
+    else if (r) dir = DIR_RIGHT;
+    dirLabel.textContent = DIR_NAMES[dir];
+    dirLabel.classList.add('show');
+  } else {
+    moving = false;
+    dirLabel.classList.remove('show');
+  }
+}
+</script>
+</body>
+</html>
